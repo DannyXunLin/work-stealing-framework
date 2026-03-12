@@ -1,7 +1,7 @@
 pipeline {
     agent any
     parameters {
-        choice(name: 'ALGORITHM', choices: ['ema-dynamic', 'baseline', 'hybrid', 'a2ws', 'ema', 'rl', 'work-stealing'], description: '選擇演算法')
+        choice(name: 'ALGORITHM', choices: ['ema-dynamic', 'baseline', 'hybrid', 'a2ws', 'ema', 'rl', 'work-stealing', 'work-stealing-no-chunk'], description: '選擇演算法')
         string(name: 'WORKER_COUNT', defaultValue: '4', description: 'Worker 數量')
         string(name: 'TASK_FILE', defaultValue: '/var/lib/jenkins/batch_tasks_fine_grained.txt', description: '任務列表檔案路徑')
         booleanParam(name: 'CLEAN_REPORTS', defaultValue: true, description: '執行前清理舊報告')
