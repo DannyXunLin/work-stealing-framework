@@ -31,7 +31,7 @@ def execute(Map config) {
         }
     }
 
-    def CHUNK_SIZE = 5
+    def CHUNK_SIZE = 3
     def groupedByBug = microBatches.groupBy { it.bug }
     def taskChunks = []
 
