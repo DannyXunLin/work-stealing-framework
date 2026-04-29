@@ -42,7 +42,7 @@ def execute(Map config) {
         workerTasks["worker-${currentWorkerId}"] = {
 
             // Pod 只開一次（Warm Pool 核心）
-            def podLabel = "wp-${BUILD_ID}-${currentWorkerId}-${System.currentTimeMillis()}"
+            def podLabel = "wp-${BUILD_ID}-${currentWorkerId}"
 
             podTemplate(label: podLabel, yaml: """
 apiVersion: v1
