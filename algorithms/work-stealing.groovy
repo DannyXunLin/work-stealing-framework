@@ -84,7 +84,8 @@ spec:
                                 def startTime = System.currentTimeMillis()
                                 timeout(time: 60, unit: 'MINUTES') {
                                     def classesSpace = task.classes.replace(',', ' ')
-                                    sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest_class=\${test_class} test-single >/dev/null 2>&1 || true; done"
+                                    // 修正：使用正確的 ant target（test）與參數（test.entry）
+                                    sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest.entry=\${test_class} test >/dev/null 2>&1 || true; done"
                                 }
                                 def duration = (System.currentTimeMillis() - startTime) / 1000.0
                                 sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' > task_result.txt"
