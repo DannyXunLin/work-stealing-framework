@@ -3,11 +3,9 @@ def execute(Map config) {
     def workerCount = config.workerCount.toInteger()
     def algorithmName = 'baseline'
     def frameworkPath = env.WORKSPACE
-
     def podSpecs = load "${frameworkPath}/config/PodSpecs.groovy"
     def res = podSpecs.getResources()
     def jvmOpts = podSpecs.getJvmOpts()
-
     def rawTasks = readFile(taskFile).split('\n').findAll{ it.trim() }
     def microBatches = []
     def MAX_CLASSES = 30
@@ -27,13 +25,10 @@ def execute(Map config) {
             }
         }
     }
-
     def workerAssignments = [:]
     for (int i = 0; i < workerCount; i++) { workerAssignments[i] = [] }
     microBatches.eachWithIndex { task, index -> workerAssignments[index % workerCount].add(task) }
-
     sh "mkdir -p ${frameworkPath}/experiments/${algorithmName}"
-
     def workerTasks = [:]
     for (int i = 0; i < workerCount; i++) {
         def workerIndex = i
@@ -73,14 +68,16 @@ spec:
         }
     }
     parallel workerTasks
-
     microBatches.each { task ->
         for (int w = 1; w <= workerCount; w++) {
             try {
                 unstash "log-${w}-${task.bug}-${task.id}"
                 sh "cat worker_${w}.log >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
                 sh "rm worker_${w}.log"
-            } catch (Exception e) {}
+            } catch (Exception e) {
+                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} worker-${w} - ${e.message}"
+                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+            }
         }
     }
 }
