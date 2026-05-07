@@ -84,12 +84,12 @@ spec:
                                 def startTime = System.currentTimeMillis()
                                 timeout(time: 60, unit: 'MINUTES') {
                                     def classesSpace = task.classes.replace(',', ' ')
-                                    // 修正：使用正確的 ant target（test）與參數（test.entry）
                                     sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest.entry=\${test_class} test >/dev/null 2>&1 || true; done"
                                 }
                                 def duration = (System.currentTimeMillis() - startTime) / 1000.0
-                                sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' > task_result.txt"
-                                stash name: "res-${task.bug}-${task.id}-${BUILD_ID}", includes: "task_result.txt"
+                                def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
+                                sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' > ${resultFile}"
+                                stash name: "res-${task.bug}-${task.id}-${BUILD_ID}", includes: "${resultFile}"
                             }
                         }
                     }
@@ -104,10 +104,14 @@ spec:
         sh "touch ${finalLog}"
         microBatches.each { task ->
             try {
+                def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
                 unstash "res-${task.bug}-${task.id}-${BUILD_ID}"
-                sh "cat task_result.txt >> ${finalLog}"
-                sh "rm task_result.txt"
-            } catch (Exception e) {}
+                sh "cat ${resultFile} >> ${finalLog}"
+                sh "rm ${resultFile}"
+            } catch (Exception e) {
+                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} - ${e.message}"
+                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${finalLog}"
+            }
         }
     }
 }
