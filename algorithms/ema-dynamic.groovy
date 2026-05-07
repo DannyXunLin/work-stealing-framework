@@ -101,7 +101,10 @@ spec:
                 unstash "log-${w}-${task.bug}-${task.id}"
                 sh "cat worker_${w}.log >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
                 sh "rm worker_${w}.log"
-            } catch (Exception e) {}
+            } catch (Exception e) {
+                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} worker-${w} - ${e.message}"
+                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+            }
         }
     }
 }
