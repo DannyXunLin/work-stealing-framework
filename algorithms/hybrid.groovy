@@ -7,7 +7,6 @@ def execute(Map config) {
     def podSpecs = load "${frameworkPath}/config/PodSpecs.groovy"
     def res = podSpecs.getResources()
     def jvmOpts = podSpecs.getJvmOpts()
-
     def rawTasks = readFile(taskFile).split('\n').findAll{ it.trim() }
     def microBatches = []
     def MAX_CLASSES = 30
@@ -27,16 +26,13 @@ def execute(Map config) {
             }
         }
     }
-
     def groupedByBug = microBatches.groupBy { it.bug }
     def bugKeys = groupedByBug.keySet().toList()
     
     def workerAssignments = [:] 
     for (int i = 0; i < workerCount; i++) { workerAssignments[i] = [] }
     bugKeys.eachWithIndex { bug, index -> workerAssignments[index % workerCount].add(bug) }
-
     sh "mkdir -p ${frameworkPath}/experiments/${algorithmName}"
-
     def workerTasks = [:]
     for (int i = 0; i < workerCount; i++) {
         def workerIndex = i
@@ -81,14 +77,19 @@ spec:
         }
     }
     parallel workerTasks
-
     bugKeys.eachWithIndex { bug, index ->
         def workerId = (index % workerCount) + 1
         try {
             unstash "log-${workerId}-${bug}"
             sh "cat worker_${workerId}_${bug}.log >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
             sh "rm worker_${workerId}_${bug}.log"
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            echo "WARNING: Failed to collect result for bug-${bug} worker-${workerId} - ${e.message}"
+            def tasksForBug = groupedByBug[bug]
+            tasksForBug.each { task ->
+                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+            }
+        }
     }
 }
 return this
