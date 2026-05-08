@@ -52,7 +52,7 @@ spec:
       requests: { cpu: "${res.requests.cpu}", memory: "${res.requests.memory}" }
       limits: { cpu: "${res.limits.cpu}", memory: "${res.limits.memory}" }
 """) {
-                    node("base-${task.bug}-${BUILD_ID}-${currentWorkerId}-${System.currentTimeMillis()}") {
+                    node(taskLabel) {
                         container('defects4j') {
                             def chunkResultFile = "/home/jenkins/agent/workspace/work-stealing-comparison/chunk_result_${BUILD_ID}_${currentWorkerId}_${task.id.replace('-', '_')}.txt"
                             def shellScript = """cd /workspace
@@ -82,13 +82,19 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile
         def finalLog = "${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
         sh "touch ${finalLog}"
         microBatches.each { task ->
-            try {
-                def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
-                unstash "log-${currentWorkerId}-${task.bug}-${task.id}"
-                sh "cat ${resultFile} >> ${finalLog}"
-                sh "rm ${resultFile}"
-            } catch (Exception e) {
-                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} - ${e.message}"
+            def collected = false
+            for (int w = 1; w <= workerCount; w++) {
+                try {
+                    def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
+                    unstash "log-${w}-${task.bug}-${task.id}"
+                    sh "cat ${resultFile} >> ${finalLog}"
+                    sh "rm ${resultFile}"
+                    collected = true
+                    break
+                } catch (Exception e) {}
+            }
+            if (!collected) {
+                echo "WARNING: Failed to collect result for ${task.bug}:${task.id}"
                 sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${finalLog}"
             }
         }
