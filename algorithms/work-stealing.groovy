@@ -80,7 +80,7 @@ spec:
 """) {
                     node(podLabel) {
                         container('defects4j') {
-                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${System.currentTimeMillis()}.txt"
+                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}.txt"
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 """
