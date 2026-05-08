@@ -3,9 +3,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 def execute(Map config) {
     def taskFile = config.taskFile
     def workerCount = config.workerCount.toInteger()
-    def algorithmName = 'work-stealing' 
+    def algorithmName = 'work-stealing'
     def frameworkPath = env.WORKSPACE
-    
+
     def podSpecs = load "${frameworkPath}/config/PodSpecs.groovy"
     def res = podSpecs.getResources()
     def jvmOpts = podSpecs.getJvmOpts()
@@ -13,7 +13,7 @@ def execute(Map config) {
     def rawTasks = readFile(taskFile).split('\n').findAll{ it.trim() }
     def microBatches = []
     def MAX_CLASSES = 30
-    
+
     rawTasks.each { task ->
         def parts = task.split(':', 3)
         if (parts.size() >= 3 && parts[2].trim()) {
@@ -63,7 +63,7 @@ def execute(Map config) {
                 def bug = chunk.bug
                 def tasksInChunk = chunk.tasks
                 def podLabel = "ws-${bug}-${BUILD_ID}-${currentWorkerId}-${System.currentTimeMillis()}"
-                
+
                 podTemplate(label: podLabel, yaml: """
 apiVersion: v1
 kind: Pod
@@ -80,21 +80,33 @@ spec:
 """) {
                     node(podLabel) {
                         container('defects4j') {
+                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${System.currentTimeMillis()}.txt"
+                            def shellScript = """
+cd /workspace
+export ANT_OPTS='${jvmOpts}'
+"""
                             tasksInChunk.each { task ->
-                                def startTime = System.currentTimeMillis()
-                                timeout(time: 60, unit: 'MINUTES') {
-                                    def classesSpace = task.classes.replace(',', ' ')
-                                    sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest.entry=\${test_class} test >/dev/null 2>&1 || true; done"
-                                }
-                                def duration = (System.currentTimeMillis() - startTime) / 1000.0
+                                shellScript += """
+start=\$(date +%s%3N)
+ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+end=\$(date +%s%3N)
+duration=\$(echo "scale=3; (\$end - \$start) / 1000" | bc)
+echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile}
+"""
+                            }
+                            timeout(time: 60, unit: 'MINUTES') {
+                                sh shellScript
+                            }
+                            tasksInChunk.each { task ->
                                 def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
-                                sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' > ${resultFile}"
+                                sh "grep '^${task.bug}:${task.id},' ${chunkResultFile} | tail -1 > ${resultFile}"
                                 stash name: "res-${task.bug}-${task.id}-${BUILD_ID}", includes: "${resultFile}"
                             }
+                            sh "rm -f ${chunkResultFile}"
                         }
                     }
-                } 
-            } 
+                }
+            }
         }
     }
     parallel workerTasks
