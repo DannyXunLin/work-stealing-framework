@@ -3,7 +3,7 @@ def execute(Map config) {
     def workerCount = config.workerCount.toInteger()
     def algorithmName = 'hybrid'
     def frameworkPath = env.WORKSPACE
-    
+
     def podSpecs = load "${frameworkPath}/config/PodSpecs.groovy"
     def res = podSpecs.getResources()
     def jvmOpts = podSpecs.getJvmOpts()
@@ -28,8 +28,8 @@ def execute(Map config) {
     }
     def groupedByBug = microBatches.groupBy { it.bug }
     def bugKeys = groupedByBug.keySet().toList()
-    
-    def workerAssignments = [:] 
+
+    def workerAssignments = [:]
     for (int i = 0; i < workerCount; i++) { workerAssignments[i] = [] }
     bugKeys.eachWithIndex { bug, index -> workerAssignments[index % workerCount].add(bug) }
     sh "mkdir -p ${frameworkPath}/experiments/${algorithmName}"
@@ -38,10 +38,10 @@ def execute(Map config) {
         def workerIndex = i
         def currentWorkerId = workerIndex + 1
         def myBugs = workerAssignments[workerIndex]
-        
+
         workerTasks["worker-${currentWorkerId}"] = {
             if (myBugs.isEmpty()) return
-            
+
             myBugs.each { bug ->
                 def tasksForThisBug = groupedByBug[bug]
                 podTemplate(label: "hybrid-${bug}-${BUILD_ID}-${currentWorkerId}", yaml: """
@@ -60,34 +60,46 @@ spec:
 """) {
                     node("hybrid-${bug}-${BUILD_ID}-${currentWorkerId}") {
                         container('defects4j') {
+                            def bugResultFile = "hybrid_result_${BUILD_ID}_${currentWorkerId}_${bug}.txt"
+                            def shellScript = """cd /workspace
+export ANT_OPTS='${jvmOpts}'
+"""
                             tasksForThisBug.each { task ->
-                                def startTime = System.currentTimeMillis()
-                                timeout(time: 60, unit: 'MINUTES') {
-                                    def classesSpace = task.classes.replace(',', ' ')
-                                    sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest_class=\${test_class} test-single >/dev/null 2>&1 || true; done"
-                                }
-                                def duration = (System.currentTimeMillis() - startTime) / 1000.0
-                                sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' >> worker_${currentWorkerId}_${bug}.log"
+                                shellScript += """start=\$(date +%s%3N)
+ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+end=\$(date +%s%3N)
+duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
+echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${bugResultFile}
+"""
                             }
+                            timeout(time: 60, unit: 'MINUTES') {
+                                sh shellScript
+                            }
+                            stash name: "log-${currentWorkerId}-${bug}", includes: "${bugResultFile}"
                         }
-                        stash name: "log-${currentWorkerId}-${bug}", includes: "worker_${currentWorkerId}_${bug}.log"
                     }
-                } 
+                }
             }
         }
     }
     parallel workerTasks
-    bugKeys.eachWithIndex { bug, index ->
-        def workerId = (index % workerCount) + 1
-        try {
-            unstash "log-${workerId}-${bug}"
-            sh "cat worker_${workerId}_${bug}.log >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
-            sh "rm worker_${workerId}_${bug}.log"
-        } catch (Exception e) {
-            echo "WARNING: Failed to collect result for bug-${bug} worker-${workerId} - ${e.message}"
-            def tasksForBug = groupedByBug[bug]
-            tasksForBug.each { task ->
-                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+
+    node('built-in') {
+        def finalLog = "${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+        sh "touch ${finalLog}"
+        bugKeys.eachWithIndex { bug, index ->
+            def workerId = (index % workerCount) + 1
+            try {
+                def bugResultFile = "hybrid_result_${BUILD_ID}_${workerId}_${bug}.txt"
+                unstash "log-${workerId}-${bug}"
+                sh "cat ${bugResultFile} >> ${finalLog}"
+                sh "rm ${bugResultFile}"
+            } catch (Exception e) {
+                echo "WARNING: Failed to collect result for bug-${bug} worker-${workerId} - ${e.message}"
+                def tasksForBug = groupedByBug[bug]
+                tasksForBug.each { task ->
+                    sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${finalLog}"
+                }
             }
         }
     }
