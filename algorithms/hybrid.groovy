@@ -61,16 +61,16 @@ spec:
                     node("hybrid-${bug}-${BUILD_ID}-${currentWorkerId}") {
                         container('defects4j') {
                             def bugResultFile = "hybrid_result_${BUILD_ID}_${currentWorkerId}_${bug}.txt"
-                            def shellScript = """cd /workspace
-export ANT_OPTS='${jvmOpts}'
-"""
+                            def bugResultFilePath = "/home/jenkins/agent/workspace/work-stealing-comparison/${bugResultFile}"
+                            def shellScript = """export ANT_OPTS='${jvmOpts}'
+                            """
                             tasksForThisBug.each { task ->
                                 shellScript += """start=\$(date +%s%3N)
-ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
-end=\$(date +%s%3N)
-duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${bugResultFile}
-"""
+                            cd /workspace && ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+                            end=\$(date +%s%3N)
+                            duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
+                            echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${bugResultFilePath}
+                            """
                             }
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
