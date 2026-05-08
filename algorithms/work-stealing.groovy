@@ -81,7 +81,7 @@ spec:
                     node(podLabel) {
                         container('defects4j') {
                             def firstTaskId = tasksInChunk[0].id.replace('-', '_')
-                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${firstTaskId}.txt"
+                            def chunkResultFile = "/home/jenkins/agent/workspace/work-stealing-comparison/chunk_result_${BUILD_ID}_${currentWorkerId}_${firstTaskId}.txt"
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 """
