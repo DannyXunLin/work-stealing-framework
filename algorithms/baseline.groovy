@@ -37,7 +37,8 @@ def execute(Map config) {
 
         workerTasks["worker-${currentWorkerId}"] = {
             myTasks.each { task ->
-                podTemplate(label: "base-${task.bug}-${BUILD_ID}-${currentWorkerId}-${System.currentTimeMillis()}", yaml: """
+                def taskLabel = "base-${task.bug}-${BUILD_ID}-${currentWorkerId}-${task.id.replace('-','_')}"
+                podTemplate(label: taskLabel, yaml: """
 apiVersion: v1
 kind: Pod
 spec:
