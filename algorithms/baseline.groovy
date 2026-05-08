@@ -53,7 +53,7 @@ spec:
 """) {
                     node("base-${task.bug}-${BUILD_ID}-${currentWorkerId}-${System.currentTimeMillis()}") {
                         container('defects4j') {
-                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${task.id.replace('-', '_')}.txt"
+                            def chunkResultFile = "/home/jenkins/agent/workspace/work-stealing-comparison/chunk_result_${BUILD_ID}_${currentWorkerId}_${task.id.replace('-', '_')}.txt"
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 start=\$(date +%s%3N)
