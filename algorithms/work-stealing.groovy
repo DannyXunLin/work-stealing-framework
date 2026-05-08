@@ -80,7 +80,8 @@ spec:
 """) {
                     node(podLabel) {
                         container('defects4j') {
-                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}.txt"
+                            def firstTaskId = tasksInChunk[0].id.replace('-', '_')
+                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${firstTaskId}.txt"
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 """
