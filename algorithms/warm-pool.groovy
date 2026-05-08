@@ -69,17 +69,29 @@ spec:
                             if (chunk == null) break
 
                             def tasksInChunk = chunk.tasks
+                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${System.currentTimeMillis()}.txt"
+                            def shellScript = """
+cd /workspace
+export ANT_OPTS='${jvmOpts}'
+"""
                             tasksInChunk.each { task ->
-                                def startTime = System.currentTimeMillis()
-                                timeout(time: 60, unit: 'MINUTES') {
-                                    def classesSpace = task.classes.replace(',', ' ')
-                                    sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest.entry=\${test_class} test >/dev/null 2>&1 || true; done"
-                                }
-                                def duration = (System.currentTimeMillis() - startTime) / 1000.0
+                                shellScript += """
+start=\$(date +%s%3N)
+ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+end=\$(date +%s%3N)
+duration=\$(echo "scale=3; (\$end - \$start) / 1000" | bc)
+echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile}
+"""
+                            }
+                            timeout(time: 60, unit: 'MINUTES') {
+                                sh shellScript
+                            }
+                            tasksInChunk.each { task ->
                                 def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
-                                sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' > ${resultFile}"
+                                sh "grep '^${task.bug}:${task.id},' ${chunkResultFile} | tail -1 > ${resultFile}"
                                 stash name: "res-${task.bug}-${task.id}-${BUILD_ID}", includes: "${resultFile}"
                             }
+                            sh "rm -f ${chunkResultFile}"
                         }
                     }
                 }
