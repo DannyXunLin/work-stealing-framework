@@ -70,16 +70,14 @@ spec:
 
                             def tasksInChunk = chunk.tasks
                             def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${System.currentTimeMillis()}.txt"
-                            def shellScript = """
-cd /workspace
+                            def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 """
                             tasksInChunk.each { task ->
-                                shellScript += """
-start=\$(date +%s%3N)
+                                shellScript += """start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
-duration=\$(echo "scale=3; (\$end - \$start) / 1000" | bc)
+duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
 echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile}
 """
                             }
