@@ -69,7 +69,8 @@ spec:
                             if (chunk == null) break
 
                             def tasksInChunk = chunk.tasks
-                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}.txt"
+                            def firstTaskId = tasksInChunk[0].id.replace('-', '_')
+                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${firstTaskId}.txt"
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 """
