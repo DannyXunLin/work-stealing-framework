@@ -31,7 +31,7 @@ def execute(Map config) {
     echo "📊 正在讀取歷史資料計算 EMA..."
     def historyFiles = sh(script: "ls ${frameworkPath}/experiments/*/batch_durations_*.log 2>/dev/null || true", returnStdout: true).split('\n')
     def emaMap = [:]
-    def alpha = 0.3 
+    def alpha = 0.3
 
     historyFiles.each { file ->
         if (file.trim()) {
@@ -40,9 +40,13 @@ def execute(Map config) {
                 def parts = line.split(',')
                 if (parts.size() >= 2) {
                     def taskId = parts[0]
-                    def duration = parts[1].toDouble()
-                    if (emaMap[taskId] == null) emaMap[taskId] = duration
-                    else emaMap[taskId] = (alpha * duration) + ((1 - alpha) * emaMap[taskId])
+                    try {
+                        def duration = parts[1].toDouble()
+                        if (duration > 0) {
+                            if (emaMap[taskId] == null) emaMap[taskId] = duration
+                            else emaMap[taskId] = (alpha * duration) + ((1 - alpha) * emaMap[taskId])
+                        }
+                    } catch (Exception e) {}
                 }
             }
         }
@@ -50,7 +54,7 @@ def execute(Map config) {
 
     microBatches.each { it.predictedTime = emaMap["${it.bug}:${it.id}"] ?: 10.0 }
     microBatches.sort { a, b -> b.predictedTime <=> a.predictedTime }
-    
+
     java.util.concurrent.ConcurrentLinkedQueue dynamicQueue = new java.util.concurrent.ConcurrentLinkedQueue(microBatches)
 
     sh "mkdir -p ${frameworkPath}/experiments/${algorithmName}"
@@ -62,8 +66,10 @@ def execute(Map config) {
             while (true) {
                 def task = dynamicQueue.poll()
                 if (task == null) break
-                
-                podTemplate(label: "ema-${task.bug}-${BUILD_ID}-${currentWorkerId}", yaml: """
+
+                def podLabel = "ema-${task.bug}-${BUILD_ID}-${currentWorkerId}-${System.currentTimeMillis()}"
+
+                podTemplate(label: podLabel, yaml: """
 apiVersion: v1
 kind: Pod
 spec:
@@ -77,17 +83,25 @@ spec:
       requests: { cpu: "${res.requests.cpu}", memory: "${res.requests.memory}" }
       limits: { cpu: "${res.limits.cpu}", memory: "${res.limits.memory}" }
 """) {
-                    node("ema-${task.bug}-${BUILD_ID}-${currentWorkerId}") {
+                    node(podLabel) {
                         container('defects4j') {
-                            def startTime = System.currentTimeMillis()
+                            def chunkResultFile = "chunk_result_${BUILD_ID}_${currentWorkerId}_${System.currentTimeMillis()}.txt"
+                            def shellScript = """cd /workspace
+export ANT_OPTS='${jvmOpts}'
+start=\$(date +%s%3N)
+ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+end=\$(date +%s%3N)
+duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
+echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile}
+"""
                             timeout(time: 60, unit: 'MINUTES') {
-                                def classesSpace = task.classes.replace(',', ' ')
-                                sh "cd /workspace && export ANT_OPTS='${jvmOpts}' && for test_class in ${classesSpace}; do ant -Dtest_class=\${test_class} test-single >/dev/null 2>&1 || true; done"
+                                sh shellScript
                             }
-                            def duration = (System.currentTimeMillis() - startTime) / 1000.0
-                            sh "echo '${task.bug}:${task.id},${duration},${algorithmName}' >> worker_${currentWorkerId}.log"
+                            def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
+                            sh "grep '^${task.bug}:${task.id},' ${chunkResultFile} | tail -1 > ${resultFile}"
+                            stash name: "res-${task.bug}-${task.id}-${BUILD_ID}", includes: "${resultFile}"
+                            sh "rm -f ${chunkResultFile}"
                         }
-                        stash name: "log-${currentWorkerId}-${task.bug}-${task.id}", includes: "worker_${currentWorkerId}.log"
                     }
                 }
             }
@@ -95,15 +109,18 @@ spec:
     }
     parallel workerTasks
 
-    microBatches.eachWithIndex { task, index ->
-        for (int w = 1; w <= workerCount; w++) {
+    node('built-in') {
+        def finalLog = "${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+        sh "touch ${finalLog}"
+        microBatches.each { task ->
             try {
-                unstash "log-${w}-${task.bug}-${task.id}"
-                sh "cat worker_${w}.log >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
-                sh "rm worker_${w}.log"
+                def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
+                unstash "res-${task.bug}-${task.id}-${BUILD_ID}"
+                sh "cat ${resultFile} >> ${finalLog}"
+                sh "rm ${resultFile}"
             } catch (Exception e) {
-                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} worker-${w} - ${e.message}"
-                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} - ${e.message}"
+                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${finalLog}"
             }
         }
     }
