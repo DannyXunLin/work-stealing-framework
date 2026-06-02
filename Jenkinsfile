@@ -3,7 +3,7 @@ pipeline {
     parameters {
         choice(
             name: 'ALGORITHM',
-            choices: ['hybrid', 'baseline', 'work-stealing-no-chunk', 'work-stealing', 'ema-dynamic', 'warm-pool', 'ALL'],
+            choices: ['round-robin', 'random-dynamic', 'lpt-dynamic', 'spt-dynamic', 'ALL'],
             description: '選擇演算法'
         )
         string(name: 'WORKER_COUNT', defaultValue: '1', description: 'Worker 數量')
@@ -28,7 +28,7 @@ pipeline {
                     def algosToRun = []
                     if (params.ALGORITHM == 'ALL') {
                         // ema-dynamic 放最後，讓它可以吃前面的歷史紀錄
-                        algosToRun = ['hybrid', 'baseline', 'work-stealing-no-chunk', 'work-stealing', 'ema-dynamic', 'warm-pool']
+                        algosToRun = ['round-robin', 'random-dynamic', 'lpt-dynamic', 'spt-dynamic']
                     } else {
                         algosToRun = [params.ALGORITHM]
                     }
