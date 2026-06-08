@@ -52,7 +52,7 @@ kind: Pod
 spec:
   containers:
   - name: defects4j
-    image: 192.168.56.10:5000/defects4j-lang-bug1:latest
+    image: 140.134.27.100:5000/defects4j-lang-bug1:latest
     imagePullPolicy: Always
     tty: true
     command: [cat]
