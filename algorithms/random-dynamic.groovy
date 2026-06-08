@@ -45,7 +45,6 @@ def execute(Map config) {
         workerTasks["worker-${currentWorkerId}"] = {
             def podLabel = "rd-${BUILD_ID}-${currentWorkerId}"
 
-            // 整個 Worker 只建立一個 Pod
             podTemplate(label: podLabel, yaml: """
 apiVersion: v1
 kind: Pod
@@ -62,29 +61,30 @@ spec:
 """) {
                 node(podLabel) {
                     container('defects4j') {
-                        // 在同一個 Pod 內持續從 GlobalQueue 搶任務直到空為止
+                        def localLog = "/tmp/worker_${currentWorkerId}_${BUILD_ID}.log"
+                        sh "touch ${localLog}"
+
                         while (true) {
                             def task = globalQueue.poll()
                             if (task == null) break
 
-                            def chunkResultFile = "/home/jenkins/agent/workspace/work-stealing-comparison/chunk_result_${BUILD_ID}_${currentWorkerId}_${task.id.replace('-', '_')}.txt"
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile}
+echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
 """
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
-                            def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
-                            sh "grep '^${task.bug}:${task.id},' ${chunkResultFile} | tail -1 > ${resultFile}"
-                            stash name: "res-${task.bug}-${task.id}-${BUILD_ID}", includes: "${resultFile}"
-                            sh "rm -f ${chunkResultFile}"
                         }
-                        // Queue 清空後，Pod 才在這裡銷毀
+
+                        // 全部跑完才 stash 一次
+                        sh "cp ${localLog} worker_log_${currentWorkerId}_${BUILD_ID}.txt"
+                        stash name: "log-${currentWorkerId}-${BUILD_ID}", includes: "worker_log_${currentWorkerId}_${BUILD_ID}.txt"
+                        sh "rm -f ${localLog} worker_log_${currentWorkerId}_${BUILD_ID}.txt"
                     }
                 }
             }
@@ -95,15 +95,13 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${chunkResultFile
     node('built-in') {
         def finalLog = "${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
         sh "touch ${finalLog}"
-        microBatches.each { task ->
+        for (int w = 1; w <= workerCount; w++) {
             try {
-                def resultFile = "result_${task.bug}_${task.id}_${BUILD_ID}.txt"
-                unstash "res-${task.bug}-${task.id}-${BUILD_ID}"
-                sh "cat ${resultFile} >> ${finalLog}"
-                sh "rm ${resultFile}"
+                unstash "log-${w}-${BUILD_ID}"
+                sh "cat worker_log_${w}_${BUILD_ID}.txt >> ${finalLog}"
+                sh "rm -f worker_log_${w}_${BUILD_ID}.txt"
             } catch (Exception e) {
-                echo "WARNING: Failed to collect result for ${task.bug}:${task.id} - ${e.message}"
-                sh "echo '${task.bug}:${task.id},-1,${algorithmName}' >> ${finalLog}"
+                echo "WARNING: Failed to collect from worker ${w} - ${e.message}"
             }
         }
     }
