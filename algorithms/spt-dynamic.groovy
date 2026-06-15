@@ -56,9 +56,9 @@ def execute(Map config) {
         }
     }
 
-    // 輕任務優先（升冪排序，與 LPT 相反）
+    // 輕任務優先（升冪排序）
     microBatches.each { it.predictedTime = emaMap["${it.bug}:${it.id}"] ?: 10.0 }
-    microBatches.sort { a, b -> a.predictedTime <=> b.predictedTime }
+    microBatches = sortByPredictedTimeAsc(microBatches)
 
     ConcurrentLinkedQueue globalQueue = new ConcurrentLinkedQueue(microBatches)
 
@@ -132,4 +132,10 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
         }
     }
 }
+
+@NonCPS
+def sortByPredictedTimeAsc(list) {
+    return list.sort { a, b -> a.predictedTime <=> b.predictedTime }
+}
+
 return this
