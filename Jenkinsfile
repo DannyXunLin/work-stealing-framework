@@ -1,81 +1,133 @@
 pipeline {
     agent any
     parameters {
-        choice(
-            name: 'ALGORITHM',
-            choices: ['round-robin', 'random-dynamic', 'lpt-dynamic', 'spt-dynamic', 'ALL'],
-            description: '選擇演算法'
-        )
-        string(name: 'WORKER_COUNT', defaultValue: '1', description: 'Worker 數量')
-        string(
-            name: 'TASK_FILE',
-            defaultValue: '/var/lib/jenkins/batch_tasks_bug1_real_10x.txt',
-            description: '任務列表檔案路徑'
-        )
-        booleanParam(name: 'CLEAN_REPORTS', defaultValue: true, description: '執行前清理舊報告')
+        // <<< 改：原本單一 ALGORITHM + 單一 WORKER_COUNT,改成分階段控制
+        string(name: 'PARALLEL_WORKERS', defaultValue: '1,2,3,4,5', description: '階段一(並行):round-robin/random 要跑的worker數清單,逗號分隔。留空則跳過階段一')
+        string(name: 'SERIAL_WORKERS',   defaultValue: '1,2,3,4,5', description: '階段二(序列):lpt/spt 要跑的worker數清單,逗號分隔。留空則跳過階段二')
+        string(name: 'CPU_MODE',          defaultValue: 'fixed', description: 'fixed=固定核心(用CPU_FIXED_CORES) | variable=每worker不同(用CPU_VARIABLE_CORES)')
+        string(name: 'CPU_FIXED_CORES',   defaultValue: '2', description: 'CPU_MODE=fixed 時,每個worker的核心數')
+        string(name: 'CPU_VARIABLE_CORES',defaultValue: '7,5,3,2,1', description: 'CPU_MODE=variable 時,依worker編號分配的核心數(由大到小;8核VM建議最大設7留餘裕)')
+        string(name: 'TASK_FILE', defaultValue: '/var/lib/jenkins/batch_tasks_bug1_real_10x.txt', description: '任務列表檔案路徑')
+        booleanParam(name: 'CLEAN_REPORTS', defaultValue: true, description: '執行前清理舊報告(保證EMA只吃本次數據,建議維持勾選)')
+        // <<< 新增:基準驗證的覆蓋率門檻(%)。健康跑預期=100;留 5% 容忍極少數耗時<1ms 被濾掉的 task。要嚴格全覆蓋設 100
+        string(name: 'MIN_EMA_COVERAGE_PCT', defaultValue: '95', description: '階段一·五基準驗證:每支基準的 task 覆蓋率門檻(%)。低於此值即中斷,不進階段二')
     }
     options {
         timeout(time: 6, unit: 'HOURS')
         timestamps()
     }
     stages {
-        stage('準備與執行') {
+        stage('清理') {
             steps {
                 script {
                     env.FRAMEWORK_PATH = env.WORKSPACE
-
-                    // 判斷要跑哪些演算法
-                    def algosToRun = []
-                    if (params.ALGORITHM == 'ALL') {
-                        // ema-dynamic 放最後，讓它可以吃前面的歷史紀錄
-                        algosToRun = ['round-robin', 'random-dynamic', 'lpt-dynamic', 'spt-dynamic']
-                    } else {
-                        algosToRun = [params.ALGORITHM]
-                    }
-
-                    // 依序執行每個演算法
-                    algosToRun.each { algoName ->
-                        echo "======================================================="
-                        echo "🚀 準備執行演算法: ${algoName} (Worker 數量: ${params.WORKER_COUNT})"
-                        echo "======================================================="
-
-                        sh "mkdir -p ${env.FRAMEWORK_PATH}/experiments/${algoName}"
-                        if (params.CLEAN_REPORTS) {
-                            sh "rm -rf ${env.FRAMEWORK_PATH}/experiments/${algoName}/* || true"
+                    // <<< 改：清理移到最前面只做一次,且清掉全部四個演算法的舊log(保證EMA乾淨)
+                    def allAlgos = ['round-robin', 'random-dynamic', 'lpt-dynamic', 'spt-dynamic']
+                    allAlgos.each { a -> sh "mkdir -p ${env.FRAMEWORK_PATH}/experiments/${a}" }
+                    if (params.CLEAN_REPORTS) {
+                        allAlgos.each { a ->
+                            sh "rm -rf ${env.FRAMEWORK_PATH}/experiments/${a}/* || true"
                         }
+                        echo "🧹 已清空 experiments/ 舊 log,EMA 將只讀本次數據"
+                    }
+                }
+            }
+        }
 
-                        def algorithmFile = "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
-                        def algorithm = load algorithmFile
+        stage('階段一:並行 round-robin + random') {
+            when { expression { params.PARALLEL_WORKERS?.trim() } }
+            steps {
+                script {
+                    def cpuVariableList = params.CPU_VARIABLE_CORES.split(',').collect { it.trim() }
+                    def parallelAlgos = ['round-robin', 'random-dynamic']
+                    def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }
 
-                        echo "⏱️ [System] 開始測量真實執行時間 (Wall Time)..."
-                        long startTime = System.currentTimeMillis()
+                    // 組出所有並行分支:每個 (演算法 × worker數) 是一個獨立分支
+                    def parallelJobs = [:]
+                    parallelAlgos.each { algoName ->
+                        wcs.each { wc ->
+                            def groupTag = "${algoName}-${wc}w"
+                            def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
+                            def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
+                            parallelJobs[groupTag] = {
+                                echo "🚀 [並行] ${algoName} (${wc}w, CPU_MODE=${params.CPU_MODE})"
+                                def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
+                                long st = System.currentTimeMillis()
+                                algorithm.execute(
+                                    taskFile: params.TASK_FILE,
+                                    workerCount: wc,
+                                    groupTag: groupTag,
+                                    cpuCores: cpuCores,
+                                    cpuPerWorker: cpuPerWorker
+                                )
+                                long et = System.currentTimeMillis()
+                                def dur = (et - st) / 1000.0
+                                echo "⏱️ [並行] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
+                                sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
+                            }
+                        }
+                    }
+                    echo "本階段並行分支數:${parallelJobs.size()} → ${parallelJobs.keySet().join(', ')}"
+                    parallel parallelJobs   // <<< 全部並行,跑完才往下(進入階段一·五)
+                }
+            }
+        }
 
-                        algorithm.execute(
-                            taskFile: params.TASK_FILE,
-                            workerCount: params.WORKER_COUNT.toInteger()
-                        )
+        // <<< 新增階段:在啟動任何 lpt/spt pod「之前」,一次驗完階段二要用到的所有 worker 數,其
+        //     round-robin / random-dynamic 兩支基準 log 是否「存在且覆蓋率達標」。任一不過立即 error,
+        //     於是不會白跑階段二(fail-fast)。驗證邏輯見 algorithms/validate-baselines.groovy。
+        //     位置:必須在階段一(產生基準 log)之後、階段二(消費基準 log)之前。
+        stage('階段一·五:基準驗證(fail-fast,避免階段二白跑)') {
+            when { expression { params.SERIAL_WORKERS?.trim() } }
+            steps {
+                script {
+                    def wcs = params.SERIAL_WORKERS.split(',').collect { it.trim().toInteger() }
+                    def validator = load "${env.FRAMEWORK_PATH}/algorithms/validate-baselines.groovy"
+                    validator.validate(
+                        taskFile: params.TASK_FILE,
+                        workerCounts: wcs,
+                        minCoveragePct: params.MIN_EMA_COVERAGE_PCT.trim().toInteger()
+                    )
+                }
+            }
+        }
 
-                        long endTime = System.currentTimeMillis()
-                        def duration = (endTime - startTime) / 1000.0
-                        echo "⏱️ [System] ${algoName} 執行結束！總耗時: ${duration} 秒"
+        stage('階段二:序列 lpt + spt') {
+            when { expression { params.SERIAL_WORKERS?.trim() } }
+            steps {
+                script {
+                    def cpuVariableList = params.CPU_VARIABLE_CORES.split(',').collect { it.trim() }
+                    def serialAlgos = ['lpt-dynamic', 'spt-dynamic']   // 順序固定:lpt 先 spt 後
+                    def wcs = params.SERIAL_WORKERS.split(',').collect { it.trim().toInteger() }
 
-                        def runtimeFile = "${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${params.WORKER_COUNT}w.txt"
-                        sh "echo '${duration}' > ${runtimeFile}"
-
-                        // 確認結果
-                        def logFile = "${env.FRAMEWORK_PATH}/experiments/${algoName}/batch_durations_${BUILD_ID}.log"
-                        if (fileExists(logFile)) {
-                            def count = sh(script: "wc -l < ${logFile}", returnStdout: true).trim()
-                            echo "✅ ${algoName} 實驗完成！成功處理批次數：${count}"
+                    wcs.each { wc ->
+                        serialAlgos.each { algoName ->
+                            echo "🚀 [序列] ${algoName} (${wc}w)"
+                            def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
+                            def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
+                            def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
+                            long st = System.currentTimeMillis()
+                            algorithm.execute(
+                                taskFile: params.TASK_FILE,
+                                workerCount: wc,
+                                groupTag: "${algoName}-${wc}w",
+                                cpuCores: cpuCores,
+                                cpuPerWorker: cpuPerWorker
+                            )
+                            long et = System.currentTimeMillis()
+                            def dur = (et - st) / 1000.0
+                            echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
+                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
                         }
                     }
                 }
             }
         }
-        stage('生成報告與存檔') {
+
+        stage('存檔') {
             steps {
                 script {
-                    archiveArtifacts artifacts: "experiments/**/*.tar.gz, experiments/**/runtime_*.txt", allowEmptyArchive: true
+                    archiveArtifacts artifacts: "experiments/**/runtime_*.txt, experiments/**/batch_durations_*.log", allowEmptyArchive: true
                 }
             }
         }
@@ -84,7 +136,6 @@ pipeline {
         always {
             script {
                 sh "rm -f current_exp || true"
-                sh "rm -f /tmp/tasks_${BUILD_ID}.txt || true"
                 dir("${env.FRAMEWORK_PATH}/experiments") {
                     sh "python3 plot_comparison.py || true"
                 }
