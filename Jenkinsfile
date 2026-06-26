@@ -55,8 +55,14 @@ pipeline {
                     def parallelAlgos = ['round-robin', 'random-dynamic']   // 不動:演算法清單不變
                     def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }   // 不動:參數名稱沿用,僅內部執行方式改為序列
 
+                    // <<< 改:原本用 wcs.max() 在Jenkins script-security沙箱裡會被擋
+                    //     (DefaultGroovyMethods.max(Collection) 不在預設白名單,需管理員手動核准
+                    //     簽名才能用)。改成用 .each 手動找最大值,只依賴已驗證可用的方法(.each 在
+                    //     「清理」階段已成功執行過),不用動 Jenkins 後台設定就能直接跑。
+                    def maxWc = 0
+                    wcs.each { if (it > maxWc) maxWc = it }
                     echo "🚀 階段一序列執行開始:${wcs.size()} 個worker數 × ${parallelAlgos.size()} 個基準演算法," +
-                         "共 ${wcs.size() * parallelAlgos.size()} 個分支,依序執行(每分支內部worker仍平行,最多${wcs.max()}個,不超過VM數)"
+                         "共 ${wcs.size() * parallelAlgos.size()} 個分支,依序執行(每分支內部worker仍平行,最多${maxWc}個,不超過VM數)"
 
                     wcs.each { wc ->
                         parallelAlgos.each { algoName ->
