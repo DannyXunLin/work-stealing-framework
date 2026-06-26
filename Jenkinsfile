@@ -2,7 +2,7 @@ pipeline {
     agent any
     parameters {
         // <<< 改：原本單一 ALGORITHM + 單一 WORKER_COUNT,改成分階段控制
-        string(name: 'PARALLEL_WORKERS', defaultValue: '1,2,3,4,5', description: '階段一(並行):round-robin/random 要跑的worker數清單,逗號分隔。留空則跳過階段一')
+        string(name: 'PARALLEL_WORKERS', defaultValue: '1,2,3,4,5', description: '階段一(序列):round-robin/random 要跑的worker數清單,逗號分隔。留空則跳過階段一')
         string(name: 'SERIAL_WORKERS',   defaultValue: '1,2,3,4,5', description: '階段二(序列):lpt/spt 要跑的worker數清單,逗號分隔。留空則跳過階段二')
         string(name: 'CPU_MODE',          defaultValue: 'fixed', description: 'fixed=固定核心(用CPU_FIXED_CORES) | variable=每worker不同(用CPU_VARIABLE_CORES)')
         string(name: 'CPU_FIXED_CORES',   defaultValue: '2', description: 'CPU_MODE=fixed 時,每個worker的核心數')
@@ -34,41 +34,51 @@ pipeline {
             }
         }
 
-        stage('階段一:並行 round-robin + random') {
+        stage('階段一:序列 round-robin + random') {
+            // <<< 改:從「10條分支(5個worker數×2個演算法)全部塞進同一個parallel區塊同時發動」
+            //     改成「依worker數逐輪序列執行,跟階段二(lpt/spt)同一套架構」。
+            //     決策原因:原平行設計同時pod需求 = (Σwc)×2演算法 = (1+2+3+4+5)×2 = 30個worker pod,
+            //     但叢集只有5台VM。不管anti-affinity的label範圍怎麼設(全域/scoped),只要同時發動的
+            //     pod數>VM數,必然出現「全域→大量Pending排隊」或「scoped→跨分支共用VM搶CPU、計時噪音
+            //     視硬體規格與機率而定」兩者之一。若要結構上保證「一台VM永遠只跑一個worker pod、零例外、
+            //     不用驗證、不用猜機率」,唯一辦法是讓同時存在的worker pod數本身≤5,即序列化每個分支。
+            //     改動後:同一時刻只有一個(演算法,worker數)分支在執行,該分支內部的worker才彼此parallel
+            //     (最多5個,剛好=VM數,排得下不卡)。
+            //     代價:階段一耗時從「趨近最久那條分支」變成「十條分支耗時總和」,保守估計拉長數倍,
+            //     換回「不需要再討論共擠機率、不需要量nodeName驗證」的結構性保證。
+            //     round-robin.groovy / random-dynamic.groovy 本身不用改:被序列或平行呼叫,程式邏輯
+            //     完全一樣;其 scoped anti-affinity 在序列情境下與全域等價(同時只有一個分支存在)。
             when { expression { params.PARALLEL_WORKERS?.trim() } }
             steps {
                 script {
                     def cpuVariableList = params.CPU_VARIABLE_CORES.split(',').collect { it.trim() }
-                    def parallelAlgos = ['round-robin', 'random-dynamic']
-                    def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }
+                    def parallelAlgos = ['round-robin', 'random-dynamic']   // 不動:演算法清單不變
+                    def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }   // 不動:參數名稱沿用,僅內部執行方式改為序列
 
-                    // 組出所有並行分支:每個 (演算法 × worker數) 是一個獨立分支
-                    def parallelJobs = [:]
-                    parallelAlgos.each { algoName ->
-                        wcs.each { wc ->
+                    echo "🚀 階段一序列執行開始:${wcs.size()} 個worker數 × ${parallelAlgos.size()} 個基準演算法," +
+                         "共 ${wcs.size() * parallelAlgos.size()} 個分支,依序執行(每分支內部worker仍平行,最多${wcs.max()}個,不超過VM數)"
+
+                    wcs.each { wc ->
+                        parallelAlgos.each { algoName ->
                             def groupTag = "${algoName}-${wc}w"
                             def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
                             def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
-                            parallelJobs[groupTag] = {
-                                echo "🚀 [並行] ${algoName} (${wc}w, CPU_MODE=${params.CPU_MODE})"
-                                def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
-                                long st = System.currentTimeMillis()
-                                algorithm.execute(
-                                    taskFile: params.TASK_FILE,
-                                    workerCount: wc,
-                                    groupTag: groupTag,
-                                    cpuCores: cpuCores,
-                                    cpuPerWorker: cpuPerWorker
-                                )
-                                long et = System.currentTimeMillis()
-                                def dur = (et - st) / 1000.0
-                                echo "⏱️ [並行] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
-                                sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
-                            }
+                            echo "🚀 [序列] ${algoName} (${wc}w, CPU_MODE=${params.CPU_MODE})"   // <<< 改:[並行]→[序列]反映實際執行方式
+                            def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
+                            long st = System.currentTimeMillis()
+                            algorithm.execute(
+                                taskFile: params.TASK_FILE,
+                                workerCount: wc,
+                                groupTag: groupTag,
+                                cpuCores: cpuCores,
+                                cpuPerWorker: cpuPerWorker
+                            )
+                            long et = System.currentTimeMillis()
+                            def dur = (et - st) / 1000.0
+                            echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
+                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
                         }
                     }
-                    echo "本階段並行分支數:${parallelJobs.size()} → ${parallelJobs.keySet().join(', ')}"
-                    parallel parallelJobs   // <<< 全部並行,跑完才往下(進入階段一·五)
                 }
             }
         }
