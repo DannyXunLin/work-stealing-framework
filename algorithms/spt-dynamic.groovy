@@ -3,6 +3,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 def execute(Map config) {
     def taskFile = config.taskFile
     def workerCount = config.workerCount.toInteger()
+    def groupTag = config.groupTag ?: 'default'        // <<< 新增:防序列多worker數覆寫finalLog
+    def cpuCores = config.cpuCores ?: null              // <<< 新增:CPU固定模式單一值;variable時為null
+    def cpuPerWorker = config.cpuPerWorker              // <<< 新增:CPU不固定模式清單;fixed時為null
     def algorithmName = 'spt-dynamic'
     def frameworkPath = env.WORKSPACE
 
@@ -33,7 +36,20 @@ def execute(Map config) {
 
     // 讀取歷史 EMA 資料預測執行時間
     echo "📊 讀取歷史資料計算 EMA..."
-    def historyFiles = sh(script: "ls ${frameworkPath}/experiments/*/batch_durations_*.log 2>/dev/null || true", returnStdout: true).split('\n')
+    // <<< 改:EMA 來源「只讀 round-robin 與 random-dynamic 兩個基準演算法、且只讀同 worker 數」。
+    //     (1) 消除跨 worker 數污染:原 batch_durations_*.log 不分 worker 數,variable 模式下同一 task
+    //         在不同 worker 數落在不同核心層級,混合會偏移 task 間的相對排序;限縮成 *-${workerCount}w.log 斷開。
+    //     (2) 消除 lpt/spt 互讀污染並維持對等:只讀兩支 EMA-free 基準、不讀對方/自己,使 lpt-Nw 與
+    //         spt-Nw 的 EMA 來源完全相同 = {round-robin-Nw, random-dynamic-Nw}。
+    //     注意:基準 log 的「存在性 + 覆蓋率」驗證已前移到 Jenkinsfile「階段一·五:基準驗證」做 fail-fast
+    //     前置(見 validate-baselines.groovy),一次驗完所有 worker 數。故此處不再內嵌防呆,避免跑到一半
+    //     才整批作廢;能執行到這裡即代表驗證已通過,historyFiles 必為完整。
+    //     寫法:兩條獨立路徑(dash-safe,不用 {} brace expansion,因 Jenkins sh 預設可能是 dash)。
+    def historyFiles = sh(
+        script: "ls ${frameworkPath}/experiments/round-robin/batch_durations_*-${workerCount}w.log ${frameworkPath}/experiments/random-dynamic/batch_durations_*-${workerCount}w.log 2>/dev/null || true",
+        returnStdout: true
+    ).split('\n').findAll { it.trim() }
+    echo "📊 EMA 來源(基準演算法 @ ${workerCount}w,共 ${historyFiles.size()} 檔):${historyFiles.collect { it.split('/')[-1] }.join(', ')}"
     def emaMap = [:]
     def alpha = 0.3
 
@@ -67,14 +83,25 @@ def execute(Map config) {
     def workerTasks = [:]
     for (int i = 0; i < workerCount; i++) {
         def currentWorkerId = i + 1
+        def thisCpu = cpuPerWorker ? cpuPerWorker[i].toString() : (cpuCores ?: res.requests.cpu)  // <<< 新增:決定本worker核心數,優先序同lpt
 
         workerTasks["worker-${currentWorkerId}"] = {
-            def podLabel = "spt-${BUILD_ID}-${currentWorkerId}"
+            def podLabel = "spt-${BUILD_ID}-${currentWorkerId}"   // 不動:序列無並行,worker編號不撞
 
             podTemplate(label: podLabel, yaml: """
 apiVersion: v1
 kind: Pod
+metadata:
+  labels:
+    thesis-exp: worker
 spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            thesis-exp: worker
+        topologyKey: "kubernetes.io/hostname"
   containers:
   - name: defects4j
     image: 140.134.27.100:5000/defects4j-mixed-het:latest
@@ -82,12 +109,13 @@ spec:
     tty: true
     command: [cat]
     resources:
-      requests: { cpu: "${res.requests.cpu}", memory: "${res.requests.memory}" }
-      limits: { cpu: "${res.limits.cpu}", memory: "${res.limits.memory}" }
+      requests: { cpu: "${thisCpu}", memory: "${res.requests.memory}" }
+      limits: { cpu: "${thisCpu}", memory: "${res.limits.memory}" }
 """) {
+                // <<< 改:pod yaml 兩處變動 —— (1)新增anti-affinity (2)cpu改用${thisCpu}
                 node(podLabel) {
                     container('defects4j') {
-                        def localLog = "/tmp/worker_${currentWorkerId}_${BUILD_ID}.log"
+                        def localLog = "/tmp/worker_${currentWorkerId}_${BUILD_ID}.log"   // 不動
                         sh "touch ${localLog}"
 
                         while (true) {
@@ -107,10 +135,9 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
                             }
                         }
 
-                        // 全部跑完才 stash 一次
-                        sh "cp ${localLog} worker_log_${currentWorkerId}_${BUILD_ID}.txt"
-                        stash name: "log-${currentWorkerId}-${BUILD_ID}", includes: "worker_log_${currentWorkerId}_${BUILD_ID}.txt"
-                        sh "rm -f ${localLog} worker_log_${currentWorkerId}_${BUILD_ID}.txt"
+                        sh "cp ${localLog} worker_log_${currentWorkerId}_${BUILD_ID}.txt"   // 不動
+                        stash name: "log-${currentWorkerId}-${BUILD_ID}", includes: "worker_log_${currentWorkerId}_${BUILD_ID}.txt"   // 不動
+                        sh "rm -f ${localLog} worker_log_${currentWorkerId}_${BUILD_ID}.txt"   // 不動
                     }
                 }
             }
@@ -119,13 +146,13 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
     parallel workerTasks
 
     node('built-in') {
-        def finalLog = "${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}.log"
+        def finalLog = "${frameworkPath}/experiments/${algorithmName}/batch_durations_${BUILD_ID}_${groupTag}.log"   // <<< 改:加_${groupTag}
         sh "touch ${finalLog}"
         for (int w = 1; w <= workerCount; w++) {
             try {
-                unstash "log-${w}-${BUILD_ID}"
-                sh "cat worker_log_${w}_${BUILD_ID}.txt >> ${finalLog}"
-                sh "rm -f worker_log_${w}_${BUILD_ID}.txt"
+                unstash "log-${w}-${BUILD_ID}"   // 不動
+                sh "cat worker_log_${w}_${BUILD_ID}.txt >> ${finalLog}"   // 不動
+                sh "rm -f worker_log_${w}_${BUILD_ID}.txt"   // 不動
             } catch (Exception e) {
                 echo "WARNING: Failed to collect from worker ${w} - ${e.message}"
             }
