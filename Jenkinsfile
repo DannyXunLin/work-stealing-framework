@@ -1,7 +1,7 @@
 pipeline {
     agent any
     parameters {
-        // <<< 改：原本單一 ALGORITHM + 單一 WORKER_COUNT,改成分階段控制
+        // <<< 改:原本單一 ALGORITHM + 單一 WORKER_COUNT,改成分階段控制
         string(name: 'PARALLEL_WORKERS', defaultValue: '1,2,3,4,5', description: '階段一(序列):round-robin/random 要跑的worker數清單,逗號分隔。留空則跳過階段一')
         string(name: 'SERIAL_WORKERS',   defaultValue: '1,2,3,4,5', description: '階段二(序列):lpt/spt 要跑的worker數清單,逗號分隔。留空則跳過階段二')
         string(name: 'CPU_MODE',          defaultValue: 'fixed', description: 'fixed=固定核心(用CPU_FIXED_CORES) | variable=每worker不同(用CPU_VARIABLE_CORES)')
@@ -21,7 +21,7 @@ pipeline {
             steps {
                 script {
                     env.FRAMEWORK_PATH = env.WORKSPACE
-                    // <<< 改：清理移到最前面只做一次,且清掉全部四個演算法的舊log(保證EMA乾淨)
+                    // <<< 改:清理移到最前面只做一次,且清掉全部四個演算法的舊log(保證EMA乾淨)
                     def allAlgos = ['round-robin', 'random-dynamic', 'lpt-dynamic', 'spt-dynamic']
                     allAlgos.each { a -> sh "mkdir -p ${env.FRAMEWORK_PATH}/experiments/${a}" }
                     if (params.CLEAN_REPORTS) {
@@ -83,6 +83,29 @@ pipeline {
                             def dur = (et - st) / 1000.0
                             echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
                             sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
+
+                            // <<< 新增:等待本分支(groupTag)的worker pod真正清空,才進下一條分支。
+                            //     決策原因:execute()返回只代表Groovy/stash步驟跑完,不代表底層Pod已被
+                            //     kubelet完全終止並釋放CPU/memory request——Pod終止是異步的。若緊接著
+                            //     下一條分支立刻建立新pod,集群可能還卡著上一條分支Terminating中的pod,
+                            //     CPU request還沒釋放,新pod會Pending(實測build 296的lpt-5w即出現此狀況:
+                            //     "5 Insufficient cpu...No preemption victims found")。
+                            //     放置位置刻意放在dur計算與寫檔之後:確保這段等待時間絕對不會混進這次
+                            //     記錄的演算法耗時dur裡,避免汙染實驗數據;等待秒數只影響「下一條分支幾秒
+                            //     後才開始」,跟這條分支本身的測量結果無關。
+                            //     用 thesis-exp-group=${groupTag} 標籤精準篩選本分支的pod(其餘分支不受影響);
+                            //     最多等60秒(30次×2秒),歸零就立即跳出,不會無故拖長太久。
+                            sh """
+                                for i in \$(seq 1 30); do
+                                    remaining=\$(kubectl get pods -n default -l thesis-exp-group=${groupTag} --no-headers 2>/dev/null | wc -l)
+                                    if [ "\$remaining" -eq 0 ]; then
+                                        echo "✅ ${groupTag} 的所有pod已清空"
+                                        break
+                                    fi
+                                    echo "⏳ 等待 ${groupTag} 殘留pod清空,目前還有 \$remaining 個 (第\${i}次檢查)"
+                                    sleep 2
+                                done
+                            """
                         }
                     }
                 }
@@ -121,12 +144,13 @@ pipeline {
                             echo "🚀 [序列] ${algoName} (${wc}w)"
                             def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
                             def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
+                            def groupTag = "${algoName}-${wc}w"   // <<< 新增:抽出groupTag變數,等待邏輯需要用同一個值
                             def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
                             long st = System.currentTimeMillis()
                             algorithm.execute(
                                 taskFile: params.TASK_FILE,
                                 workerCount: wc,
-                                groupTag: "${algoName}-${wc}w",
+                                groupTag: groupTag,
                                 cpuCores: cpuCores,
                                 cpuPerWorker: cpuPerWorker
                             )
@@ -134,6 +158,21 @@ pipeline {
                             def dur = (et - st) / 1000.0
                             echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
                             sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
+
+                            // <<< 新增:等待邏輯,原因與放置位置同階段一(見上方註解),避免下一條分支
+                            //     (lpt→spt,或下一個worker數)因上一條的pod還沒終止完畢而Pending。
+                            //     這正是build 296實際出現"lpt-296-*...Insufficient cpu"的成因。
+                            sh """
+                                for i in \$(seq 1 30); do
+                                    remaining=\$(kubectl get pods -n default -l thesis-exp-group=${groupTag} --no-headers 2>/dev/null | wc -l)
+                                    if [ "\$remaining" -eq 0 ]; then
+                                        echo "✅ ${groupTag} 的所有pod已清空"
+                                        break
+                                    fi
+                                    echo "⏳ 等待 ${groupTag} 殘留pod清空,目前還有 \$remaining 個 (第\${i}次檢查)"
+                                    sleep 2
+                                done
+                            """
                         }
                     }
                 }
