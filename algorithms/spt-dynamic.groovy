@@ -94,13 +94,14 @@ kind: Pod
 metadata:
   labels:
     thesis-exp: worker
+    thesis-exp-group: "${groupTag}"
 spec:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
       - labelSelector:
           matchLabels:
-            thesis-exp: worker
+            thesis-exp-group: "${groupTag}"
         topologyKey: "kubernetes.io/hostname"
   containers:
   - name: defects4j
@@ -112,7 +113,16 @@ spec:
       requests: { cpu: "${thisCpu}", memory: "${res.requests.memory}" }
       limits: { cpu: "${thisCpu}", memory: "${res.limits.memory}" }
 """) {
-                // <<< 改:pod yaml 兩處變動 —— (1)新增anti-affinity (2)cpu改用${thisCpu}
+                // <<< 改:anti-affinity 從全域 thesis-exp:worker 改成 groupTag scoped(thesis-exp-group)。
+                //     決策原因(#291 build 實測證實):lpt/spt 序列執行下,同一時刻只有一個分支存在,
+                //     當時誤判為「全域與scoped無差異」,但忽略了「前一條分支的pod終止是異步的,不會在
+                //     execute()返回的瞬間就從叢集消失」。全域label下,新分支的pod必須等前一條分支用同一
+                //     全域label佔住的VM全部釋放完才能排程,wc=5時(用滿全部5台VM)完全沒有餘裕,觀察到
+                //     "5 node(s) didn't match pod anti-affinity rules"反覆出現、Unschedulable長時間
+                //     Pending,實測spt-dynamic-5w耗時245.879s,但任務內容本身只需84.861s,落差超過200秒
+                //     是純排程等待,跟SPT排序邏輯無關。改成scoped後,同一groupTag內部的worker互斥保證不變
+                //     (仍各佔一台VM,CPU配置仍有意義),但不同分支(不同groupTag)之間不再互斥,新分支可
+                //     立即排程,不需等前一分支的pod完全終止。與round-robin/random-dynamic的修法一致。
                 node(podLabel) {
                     container('defects4j') {
                         def localLog = "/tmp/worker_${currentWorkerId}_${BUILD_ID}.log"   // 不動
