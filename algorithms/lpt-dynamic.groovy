@@ -138,8 +138,16 @@ start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},pred=${task.predictedTime}" >> ${localLog}
 """
+                            // <<< 改:log 行末新增 worker${currentWorkerId} 與 pred=${task.predictedTime} 兩個欄位。
+                            //     目的:現有 finalLog 只能看到「task,duration,algorithmName」,合併5個worker的log後
+                            //     完全無法分辨哪幾行屬於同一個worker、也看不到排序當時用的predictedTime,導致
+                            //     LPT是否「重任務優先」這個核心假設無法驗證(globalQueue.poll()是work-stealing,
+                            //     每個worker拿到的任務數量不固定,無法靠「平均切N份」反推分組)。加上這兩欄後,
+                            //     可用 awk -F',' '{print $4}' 把同一worker的行抓出來,檢查該worker內部
+                            //     pred=值是否符合LPT該有的非遞增單調性;也能直接看predictedTime本身的排序
+                            //     是否正確,不受實際duration的隨機波動干擾。
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
