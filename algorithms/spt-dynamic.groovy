@@ -138,8 +138,14 @@ start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},pred=${task.predictedTime}" >> ${localLog}
 """
+                            // <<< 改:log 行末新增 worker${currentWorkerId} 與 pred=${task.predictedTime} 兩個欄位。
+                            //     目的同lpt-dynamic:現有finalLog只有「task,duration,algorithmName」,合併5個
+                            //     worker的log後無法分辨哪幾行屬於同一worker、也看不到排序當時的predictedTime,
+                            //     導致SPT是否「輕任務優先」這個核心假設無法驗證。加上後可用
+                            //     awk -F',' '{print $4}' 篩出同一worker的行,檢查該worker內部pred=值是否
+                            //     符合SPT該有的非遞減單調性,且不受實際duration隨機波動干擾。
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
