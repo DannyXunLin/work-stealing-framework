@@ -13,7 +13,7 @@ pipeline {
         string(name: 'MIN_EMA_COVERAGE_PCT', defaultValue: '95', description: '階段一·五基準驗證:每支基準的 task 覆蓋率門檻(%)。低於此值即中斷,不進階段二')
     }
     options {
-        timeout(time: 6, unit: 'HOURS')
+        timeout(time: 24, unit: 'HOURS')
         timestamps()
     }
     stages {
