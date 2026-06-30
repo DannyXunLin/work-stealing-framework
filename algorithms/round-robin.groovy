@@ -95,8 +95,12 @@ start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName}" >> ${localLog}
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId}" >> ${localLog}
 """
+                            // <<< 改:log 行末新增 worker${currentWorkerId} 欄位(與lpt/spt/random-dynamic
+                            //     同步處理)。round-robin本身是靜態分配(index % workerCount),理論上不需要
+                            //     靠這欄位排錯,但加上後可肉眼核對「任務序號是否確實依照 i % N 規律輪流分配」
+                            //     ,且四個演算法的finalLog格式保持一致,方便後續用同一套awk/grep腳本分析。
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
