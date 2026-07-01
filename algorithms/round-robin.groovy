@@ -95,12 +95,19 @@ start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId}" >> ${localLog}
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu}" >> ${localLog}
 """
                             // <<< 改:log 行末新增 worker${currentWorkerId} 欄位(與lpt/spt/random-dynamic
                             //     同步處理)。round-robin本身是靜態分配(index % workerCount),理論上不需要
                             //     靠這欄位排錯,但加上後可肉眼核對「任務序號是否確實依照 i % N 規律輪流分配」
                             //     ,且四個演算法的finalLog格式保持一致,方便後續用同一套awk/grep腳本分析。
+                            // <<< 新增:log 行末再加 cpu${thisCpu} 欄位。決策原因:CPU_MODE=variable時,每個
+                            //     worker核心數不同,但log行原本完全沒有記錄該worker當時配置了幾核心,事後
+                            //     分析時無法直接從log內容判斷該筆任務是在哪個核心數下執行,只能另外對照
+                            //     Jenkinsfile的CPU_VARIABLE_CORES參數跟worker編號的映射關係,容易搞混或忘記。
+                            //     加上後每一行都能獨立標明自己的執行核心數,不需要額外查表。fixed模式下
+                            //     thisCpu對五個worker都相同,這欄位變成常數,不影響任何分析,只是多一個可
+                            //     以肉眼核對的欄位,不會造成負面影響。
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
