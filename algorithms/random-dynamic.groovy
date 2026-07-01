@@ -92,7 +92,7 @@ start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId}" >> ${localLog}
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu}" >> ${localLog}
 """
                             // <<< 改:log 行末新增 worker${currentWorkerId} 欄位(與lpt/spt同步處理,但不加
                             //     pred=,因random-dynamic不依賴EMA排序)。目的:globalQueue是work-stealing
@@ -100,6 +100,9 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorker
                             //     驗證shuffle後每個worker實際分配到的任務組合是否每次跑都不同(隨機性是否
                             //     真的生效,而非固定seed或退化成規律pattern)。加上後可用
                             //     grep ",worker${w}," 篩出同一worker的任務序列直接比對。
+                            // <<< 新增:log 行末再加 cpu${thisCpu} 欄位,原因同round-robin.groovy(見該檔
+                            //     內對應註解)——CPU_MODE=variable時每個worker核心數不同,加上此欄位讓每
+                            //     行任務都能獨立標明自己的執行核心數,不需額外查表對照。
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
