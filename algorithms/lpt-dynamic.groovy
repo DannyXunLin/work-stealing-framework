@@ -138,7 +138,7 @@ start=\$(date +%s%3N)
 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},pred=${task.predictedTime}" >> ${localLog}
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu},pred=${task.predictedTime}" >> ${localLog}
 """
                             // <<< 改:log 行末新增 worker${currentWorkerId} 與 pred=${task.predictedTime} 兩個欄位。
                             //     目的:現有 finalLog 只能看到「task,duration,algorithmName」,合併5個worker的log後
@@ -148,6 +148,10 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorker
                             //     可用 awk -F',' '{print $4}' 把同一worker的行抓出來,檢查該worker內部
                             //     pred=值是否符合LPT該有的非遞增單調性;也能直接看predictedTime本身的排序
                             //     是否正確,不受實際duration的隨機波動干擾。
+                            // <<< 新增:log 行末再加 cpu${thisCpu} 欄位,原因同round-robin.groovy(見該檔內
+                            //     對應註解)——CPU_MODE=variable時每個worker核心數不同,加上此欄位讓每行
+                            //     任務都能獨立標明自己的執行核心數,不需額外查表對照。放在pred=之前,維持
+                            //     spt-dynamic.groovy相同順序,方便共用同一套awk/grep腳本分析。
                             timeout(time: 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
