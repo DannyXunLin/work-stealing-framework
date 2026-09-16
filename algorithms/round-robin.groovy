@@ -88,15 +88,19 @@ spec:
                         def localLog = "/tmp/worker_${groupTag}_${currentWorkerId}_${BUILD_ID}.log"   // <<< 改:加${groupTag}_防並行同機/tmp撞名
                         sh "touch ${localLog}"
 
-                        myTasks.each { task ->
-                            def shellScript = """cd /workspace
+                        // <<< 改(小規模驗證用):myTasks 原本每個task各自呼叫一次sh,實測(build302
+                        //     round-robin-1w console log時間戳比對)每次sh呼叫本身有~1.2秒固定開銷,
+                        //     1214個task跑一次worker就是~1457秒,佔該分支總耗時約26%。round-robin是
+                        //     靜態分配(index % workerCount,myTasks在迴圈開始前就已經定案,不像
+                        //     random-dynamic/lpt/spt要邊跑邊向共用佇列要下一個task),所以可以安全地把
+                        //     myTasks全部串成同一段shellScript,整個worker只呼叫一次sh,不影響任何
+                        //     分配結果。log行格式(含worker${currentWorkerId}/cpu${thisCpu}欄位,理由
+                        //     見下方,與lpt/spt/random-dynamic對齊)不變,只是改成逐task append進同一個
+                        //     字串,最後一次寫入。
+                        def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
-start=\$(date +%s%3N)
-ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
-end=\$(date +%s%3N)
-duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
-echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu}" >> ${localLog}
 """
+                        myTasks.each { task ->
                             // <<< 改:log 行末新增 worker${currentWorkerId} 欄位(與lpt/spt/random-dynamic
                             //     同步處理)。round-robin本身是靜態分配(index % workerCount),理論上不需要
                             //     靠這欄位排錯,但加上後可肉眼核對「任務序號是否確實依照 i % N 規律輪流分配」
@@ -108,9 +112,24 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorker
                             //     加上後每一行都能獨立標明自己的執行核心數,不需要額外查表。fixed模式下
                             //     thisCpu對五個worker都相同,這欄位變成常數,不影響任何分析,只是多一個可
                             //     以肉眼核對的欄位,不會造成負面影響。
-                            timeout(time: 60, unit: 'MINUTES') {
-                                sh shellScript
-                            }
+                            shellScript += """start=\$(date +%s%3N)
+timeout -k 10 3600 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+end=\$(date +%s%3N)
+duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
+echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu}" >> ${localLog}
+"""
+                        }
+                        // <<< 改:單一task逾時改用bash自己的`timeout -k 10 3600`(3600秒=60分鐘,10秒後
+                        //     還沒死就補SIGKILL),不再依賴外層Jenkins的timeout(time:60,unit:'MINUTES')
+                        //     包住每個task呼叫——原本那個包法是包住每一次sh呼叫,現在整個worker只剩一次
+                        //     sh呼叫,若不改用bash層級的timeout,單一task卡住會讓整段shellScript(含後面
+                        //     所有還沒跑的task)一起被判定逾時、整批陣亡,而不是只犧牲那一個task。
+                        //     外層這裡的timeout(time: myTasks.size()*60, unit:'MINUTES')只是抓「每個task
+                        //     最多60分鐘」疊加起來的最壞情況總和當保險上限,沒有放寬任何一個task實際可以
+                        //     卡多久的保證(真正的60分鐘上限由上面bash的timeout保證),純粹是避免bash腳本
+                        //     本身在個別ant呼叫之外的地方卡死時,還有一層Jenkins端的兜底。
+                        timeout(time: myTasks.size() * 60, unit: 'MINUTES') {
+                            sh shellScript
                         }
 
                         sh "cp ${localLog} worker_log_${groupTag}_${currentWorkerId}_${BUILD_ID}.txt"   // <<< 改:檔名加${groupTag}_
