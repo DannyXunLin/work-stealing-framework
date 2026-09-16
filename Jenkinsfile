@@ -52,10 +52,14 @@ pipeline {
             steps {
                 script {
                     def cpuVariableList = params.CPU_VARIABLE_CORES.split(',').collect { it.trim() }
-                    def parallelAlgos = ['round-robin']   // <<< 今晚臨時修改(暫定):只跑round-robin做第一次正式驗證,
-                                                            //     random-dynamic還沒套用今晚的sh呼叫合併優化,一起跑
-                                                            //     會拖到~6.6小時、今晚時間塞不下。驗證完記得改回
-                                                            //     ['round-robin', 'random-dynamic']。
+                    def parallelAlgos = ['random-dynamic']   // <<< 今晚臨時修改(暫定,第二次調整):round-robin的正式
+                                                            //     驗證已完成(build309),資料要保留當lpt/spt的
+                                                            //     基準,現在換成只跑random-dynamic做它的驗證,
+                                                            //     避免round-robin被重跑產生新log稀釋/污染build309
+                                                            //     那份乾淨資料。觸發時CLEAN_REPORTS務必設false,
+                                                            //     不然「清理」階段仍會連round-robin資料夾一起清空。
+                                                            //     random-dynamic驗證過關、且正式版也跑完後,記得
+                                                            //     改回 ['round-robin', 'random-dynamic']。
                     def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }   // 不動:參數名稱沿用,僅內部執行方式改為序列
 
                     // <<< 改:原本用 wcs.max() 在Jenkins script-security沙箱裡會被擋
