@@ -104,7 +104,12 @@ spec:
                             for (int c = 0; c < CHUNK_SIZE; c++) {
                                 def task = globalQueue.poll()
                                 if (task == null) break
-                                chunk << task
+                                chunk.add(task)   // <<< 改:用.add()而非<<,repo裡其他地方(round-robin/lpt/spt/
+                                                    //     hybrid/work-stealing等)清一色用.add()且都在真實build裡
+                                                    //     跑過驗證;<<在這個repo唯一的先例(validate-baselines.groovy)
+                                                    //     因SERIAL_WORKERS留空從沒被實際執行過,不確定Jenkins
+                                                    //     script-security沙箱有沒有預先核准這個運算子,保守起見
+                                                    //     用已驗證安全的寫法。
                             }
                             if (chunk.isEmpty()) break
 
