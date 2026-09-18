@@ -60,39 +60,36 @@ pipeline {
                                                             //     不然「清理」階段仍會連round-robin資料夾一起清空。
                                                             //     random-dynamic驗證過關、且正式版也跑完後,記得
                                                             //     改回 ['round-robin', 'random-dynamic']。
-                    // <<< 今晚臨時修改(暫定,第三次調整,CHUNK_SIZE驗證實驗專用):暫時不跑原本
-                    //     wcs.each{}對PARALLEL_WORKERS掃過去的邏輯,改成固定workerCount=5、依序掃過
-                    //     CHUNK_SIZES這幾個值,同一份TASK_FILE(觸發時應指向100筆的pilot檔案)測完
-                    //     一輪。目的:一次build依序驗證CHUNK_SIZE=3/5/7對random-dynamic的效率與
-                    //     worker間負載平衡的影響,不用每個chunk size都重新commit+push+觸發一次。
-                    //     實驗結束、CHUNK_SIZE定案後,這整段要改回原本的wcs.each{...}版本(見上方
-                    //     git歷史,commit 179b9f0之前的版本)。
-                    def CHUNK_SIZES = [3, 5, 7]   // <<< 改:拿掉10——100筆task÷5個worker≈20個/worker,chunk=10
-                                                    //     每個worker只能poll 2輪,樣本太薄弱測不出負載平衡差異,
-                                                    //     只測3/5/7這三組在100筆規模下都還有起碼3輪以上可比較
-                    def FIXED_WC = 5
-                    echo "🚀 階段一(CHUNK_SIZE驗證模式)開始:固定${FIXED_WC}個worker,依序測 CHUNK_SIZE=${CHUNK_SIZES}"
+                    def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }   // 不動:參數名稱沿用,僅內部執行方式改為序列
 
-                    CHUNK_SIZES.each { cs ->
+                    // <<< 改:原本用 wcs.max() 在Jenkins script-security沙箱裡會被擋
+                    //     (DefaultGroovyMethods.max(Collection) 不在預設白名單,需管理員手動核准
+                    //     簽名才能用)。改成用 .each 手動找最大值,只依賴已驗證可用的方法(.each 在
+                    //     「清理」階段已成功執行過),不用動 Jenkins 後台設定就能直接跑。
+                    def maxWc = 0
+                    wcs.each { if (it > maxWc) maxWc = it }
+                    echo "🚀 階段一序列執行開始:${wcs.size()} 個worker數 × ${parallelAlgos.size()} 個基準演算法," +
+                         "共 ${wcs.size() * parallelAlgos.size()} 個分支,依序執行(每分支內部worker仍平行,最多${maxWc}個,不超過VM數)"
+
+                    wcs.each { wc ->
                         parallelAlgos.each { algoName ->
-                            def groupTag = "${algoName}-chunk${cs}-${FIXED_WC}w"   // <<< 改:groupTag帶入chunk size,避免4輪互相覆蓋
+                            def groupTag = "${algoName}-${wc}w"
                             def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
-                            def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(FIXED_WC) : null
-                            echo "🚀 [序列] ${algoName} (CHUNK_SIZE=${cs}, ${FIXED_WC}w, CPU_MODE=${params.CPU_MODE})"
+                            def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
+                            echo "🚀 [序列] ${algoName} (${wc}w, CPU_MODE=${params.CPU_MODE})"   // <<< 改:[並行]→[序列]反映實際執行方式
                             def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
                             long st = System.currentTimeMillis()
                             algorithm.execute(
                                 taskFile: params.TASK_FILE,
-                                workerCount: FIXED_WC,
+                                workerCount: wc,
                                 groupTag: groupTag,
                                 cpuCores: cpuCores,
-                                cpuPerWorker: cpuPerWorker,
-                                chunkSize: cs   // <<< 新增:傳給random-dynamic.groovy的config.chunkSize
+                                cpuPerWorker: cpuPerWorker
                             )
                             long et = System.currentTimeMillis()
                             def dur = (et - st) / 1000.0
-                            echo "⏱️ [序列] ${algoName} (CHUNK_SIZE=${cs}, ${FIXED_WC}w) 完成,耗時 ${dur}s"
-                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_chunk${cs}_${FIXED_WC}w.txt"   // <<< 改:檔名帶chunk size,避免4輪覆蓋同一個runtime_5w.txt
+                            echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
+                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
 
                             // <<< 新增:等待本分支(groupTag)的worker pod真正清空,才進下一條分支。
                             //     決策原因:execute()返回只代表Groovy/stash步驟跑完,不代表底層Pod已被
