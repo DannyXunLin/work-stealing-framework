@@ -98,7 +98,11 @@ spec:
                         //     裡後面還沒跑的task。外層timeout(time: chunk.size()*60)只是「每個task最多
                         //     60分鐘」疊加起來的最壞情況總和當保險上限,沒有放寬任何一個task實際可以卡
                         //     多久的保證。
-                        def CHUNK_SIZE = 5
+                        def CHUNK_SIZE = config.chunkSize ?: 5   // <<< 改(CHUNK_SIZE驗證實驗用):從config傳入,
+                                                                    //     沒傳時預設5(維持原本行為不變)。讓
+                                                                    //     Jenkinsfile可以在同一次build裡對同一份
+                                                                    //     task set依序測不同chunk size,不用每
+                                                                    //     次改這支檔案重新commit。
                         while (true) {
                             def chunk = []
                             for (int c = 0; c < CHUNK_SIZE; c++) {
