@@ -86,7 +86,9 @@ def execute(Map config) {
         def thisCpu = cpuPerWorker ? cpuPerWorker[i].toString() : (cpuCores ?: res.requests.cpu)  // <<< 新增:決定本worker核心數,優先序同lpt
 
         workerTasks["worker-${currentWorkerId}"] = {
-            def podLabel = "spt-${BUILD_ID}-${currentWorkerId}"   // 不動:序列無並行,worker編號不撞
+            def podLabel = "spt-${BUILD_ID}-${groupTag}-${currentWorkerId}"   // <<< 改:加入${groupTag},原因同lpt-dynamic.groovy
+                                                                              //     (build317實測:同一build內重複使用同一組label,第2輪起
+                                                                              //     node()卡在「Still waiting to schedule task」147~274秒)。
 
             podTemplate(label: podLabel, yaml: """
 apiVersion: v1

@@ -86,7 +86,11 @@ def execute(Map config) {
         def thisCpu = cpuPerWorker ? cpuPerWorker[i].toString() : (cpuCores ?: res.requests.cpu)  // <<< 新增:決定本worker核心數,優先序同並行版
 
         workerTasks["worker-${currentWorkerId}"] = {
-            def podLabel = "lpt-${BUILD_ID}-${currentWorkerId}"   // 不動:序列同時只有一分支,worker編號不撞,不需groupTag
+            def podLabel = "lpt-${BUILD_ID}-${groupTag}-${currentWorkerId}"   // <<< 改:加入${groupTag}。原本認為「序列執行、同時只有一分支,不需groupTag」,
+                                                                              //     但build317實測:同一個build內連續的短分支重複使用同一組label時,
+                                                                              //     第2輪起node()會卡在「Still waiting to schedule task」147~274秒
+                                                                              //     (pod本身5~7秒就緒),造成部分worker晚開跑、task分配嚴重不均。
+                                                                              //     label帶groupTag後每輪名稱唯一,與round-robin/random-dynamic一致。
 
             podTemplate(label: podLabel, yaml: """
 apiVersion: v1
