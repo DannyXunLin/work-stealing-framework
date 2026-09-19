@@ -128,18 +128,32 @@ spec:
                         def localLog = "/tmp/worker_${currentWorkerId}_${BUILD_ID}.log"   // 不動:序列無並行,/tmp不撞名
                         sh "touch ${localLog}"
 
+                        // <<< 改(sh呼叫合併,與random-dynamic相同寫法):一次poll CHUNK_SIZE個task組成chunk,
+                        //     chunk內串成一段shellScript只呼叫一次sh。CHUNK_SIZE由config傳入,預設5;
+                        //     傳1即等同原本逐task呼叫sh的行為(pilot用來比較chunking是否扭曲LPT排程)。
+                        //     單一task逾時改由bash的`timeout -k 10 3600`保證,外層Jenkins timeout只當
+                        //     chunk.size()*60分鐘的保險上限。每個task仍各自寫一行log(含pred=)。
+                        def CHUNK_SIZE = config.chunkSize ?: 5
                         while (true) {
-                            def task = globalQueue.poll()
-                            if (task == null) break
+                            def chunk = []
+                            for (int c = 0; c < CHUNK_SIZE; c++) {
+                                def task = globalQueue.poll()
+                                if (task == null) break
+                                chunk.add(task)
+                            }
+                            if (chunk.isEmpty()) break
 
                             def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
-start=\$(date +%s%3N)
-ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
+"""
+                            chunk.each { task ->
+                                shellScript += """start=\$(date +%s%3N)
+timeout -k 10 3600 ant -Dtest.entry=${task.classes} test >/dev/null 2>&1 || true
 end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
 echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu},pred=${task.predictedTime}" >> ${localLog}
 """
+                            }
                             // <<< 改:log 行末新增 worker${currentWorkerId} 與 pred=${task.predictedTime} 兩個欄位。
                             //     目的:現有 finalLog 只能看到「task,duration,algorithmName」,合併5個worker的log後
                             //     完全無法分辨哪幾行屬於同一個worker、也看不到排序當時用的predictedTime,導致
@@ -152,7 +166,7 @@ echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorker
                             //     對應註解)——CPU_MODE=variable時每個worker核心數不同,加上此欄位讓每行
                             //     任務都能獨立標明自己的執行核心數,不需額外查表對照。放在pred=之前,維持
                             //     spt-dynamic.groovy相同順序,方便共用同一套awk/grep腳本分析。
-                            timeout(time: 60, unit: 'MINUTES') {
+                            timeout(time: chunk.size() * 60, unit: 'MINUTES') {
                                 sh shellScript
                             }
                         }

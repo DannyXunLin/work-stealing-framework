@@ -146,12 +146,18 @@ pipeline {
                     def serialAlgos = ['lpt-dynamic', 'spt-dynamic']   // 順序固定:lpt 先 spt 後
                     def wcs = params.SERIAL_WORKERS.split(',').collect { it.trim().toInteger() }
 
+                    // <<< 臨時修改(pilot專用,驗證chunking是否扭曲LPT/SPT排程):每個(worker數,演算法)
+                    //     依序跑 PILOT_CHUNKS 裡的每個chunk size。chunk=1等同原本逐task呼叫sh,當作對照組。
+                    //     比較指標是「關鍵路徑task加總」(不含sh開銷,只反映排程品質)。groupTag與runtime檔名
+                    //     都帶chunk size,避免互相覆蓋。pilot結束、N定案後,改回原本只跑一次、不傳chunkSize。
+                    def PILOT_CHUNKS = [1, 2, 3, 5]
                     wcs.each { wc ->
                         serialAlgos.each { algoName ->
-                            echo "🚀 [序列] ${algoName} (${wc}w)"
+                          PILOT_CHUNKS.each { cs ->
+                            echo "🚀 [序列] ${algoName} (${wc}w, CHUNK_SIZE=${cs})"
                             def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
                             def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
-                            def groupTag = "${algoName}-${wc}w"   // <<< 新增:抽出groupTag變數,等待邏輯需要用同一個值
+                            def groupTag = "${algoName}-chunk${cs}-${wc}w"   // <<< 改:帶入chunk size
                             def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
                             long st = System.currentTimeMillis()
                             algorithm.execute(
@@ -159,12 +165,13 @@ pipeline {
                                 workerCount: wc,
                                 groupTag: groupTag,
                                 cpuCores: cpuCores,
-                                cpuPerWorker: cpuPerWorker
+                                cpuPerWorker: cpuPerWorker,
+                                chunkSize: cs   // <<< 新增:傳給lpt/spt的config.chunkSize
                             )
                             long et = System.currentTimeMillis()
                             def dur = (et - st) / 1000.0
-                            echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
-                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
+                            echo "⏱️ [序列] ${algoName} (${wc}w, CHUNK_SIZE=${cs}) 完成,耗時 ${dur}s"
+                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_chunk${cs}_${wc}w.txt"
 
                             // <<< 新增:等待邏輯,原因與放置位置同階段一(見上方註解),避免下一條分支
                             //     (lpt→spt,或下一個worker數)因上一條的pod還沒終止完畢而Pending。
@@ -180,6 +187,7 @@ pipeline {
                                     sleep 2
                                 done
                             """
+                          }
                         }
                     }
                 }
