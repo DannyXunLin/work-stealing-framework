@@ -82,24 +82,26 @@ spec:
                         def localLog = "/tmp/worker_${groupTag}_${currentWorkerId}_${BUILD_ID}.log"   // <<< 改:加${groupTag}_
                         sh "touch ${localLog}"
 
-                        // <<< 改(sh呼叫合併,CHUNK_SIZE=5):原本每次poll()只拿1個task就呼叫一次sh,
+                        // <<< 改(sh呼叫合併,CHUNK_SIZE預設2,四支演算法統一):原本每次poll()只拿1個task就呼叫一次sh,
                         //     實測(round-robin-1w console log時間戳比對)每次sh呼叫本身有~1.2秒固定
                         //     開銷。但random-dynamic是work-stealing(worker執行時動態搶globalQueue),
                         //     不能像round-robin那樣整批一次全部合併——那樣等於把「哪個worker拿到哪些
                         //     task」在第一個task都還沒開始跑之前就寫死,work-stealing的動態負載平衡會
-                        //     完全消失。折衷做法:一次poll CHUNK_SIZE(5)個task組成一個chunk,同一個
-                        //     chunk內串成一段shellScript只呼叫一次sh,呼叫次數降為1/5(理論可拿到
-                        //     1-1/5=80%的開銷節省),同時每個worker仍然是「跑完一個chunk才回頭搶下一個
+                        //     完全消失。折衷做法:一次poll CHUNK_SIZE個task組成一個chunk,同一個
+                        //     chunk內串成一段shellScript只呼叫一次sh,呼叫次數降為1/CHUNK_SIZE(N=2時理論
+                        //     可拿到50%的開銷節省),同時每個worker仍然是「跑完一個chunk才回頭搶下一個
                         //     chunk」,保留跑得快的worker能搶到更多工作的動態特性,只是把負載平衡的
-                        //     反應粒度從「每1個task」放粗成「每5個task」。
+                        //     反應粒度從「每1個task」放粗成「每CHUNK_SIZE個task」。
+                        //     預設值從5改為2:build318/319的LPT/SPT pilot顯示chunk=5會讓SPT關鍵路徑超出
+                        //     重複測試的變異範圍,只有chunk=2在LPT/SPT都通過;四支演算法統一用同一個值。
                         //     單一task逾時同round-robin.groovy的作法,改用bash自己的`timeout -k 10 3600`,
                         //     不再依賴外層Jenkins的timeout包住每個task——因為現在一個chunk內有多個task
                         //     共用一次sh呼叫,若不改用bash層級的timeout,單一task卡住會拖垮同一個chunk
                         //     裡後面還沒跑的task。外層timeout(time: chunk.size()*60)只是「每個task最多
                         //     60分鐘」疊加起來的最壞情況總和當保險上限,沒有放寬任何一個task實際可以卡
                         //     多久的保證。
-                        def CHUNK_SIZE = config.chunkSize ?: 5   // <<< 改(CHUNK_SIZE驗證實驗用):從config傳入,
-                                                                    //     沒傳時預設5(維持原本行為不變)。讓
+                        def CHUNK_SIZE = config.chunkSize ?: 2   // <<< 改(CHUNK_SIZE驗證實驗用):從config傳入,
+                                                                    //     沒傳時預設2(四支演算法統一)。讓
                                                                     //     Jenkinsfile可以在同一次build裡對同一份
                                                                     //     task set依序測不同chunk size,不用每
                                                                     //     次改這支檔案重新commit。

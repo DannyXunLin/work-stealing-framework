@@ -88,19 +88,23 @@ spec:
                         def localLog = "/tmp/worker_${groupTag}_${currentWorkerId}_${BUILD_ID}.log"   // <<< 改:加${groupTag}_防並行同機/tmp撞名
                         sh "touch ${localLog}"
 
-                        // <<< 改(小規模驗證用):myTasks 原本每個task各自呼叫一次sh,實測(build302
-                        //     round-robin-1w console log時間戳比對)每次sh呼叫本身有~1.2秒固定開銷,
-                        //     1214個task跑一次worker就是~1457秒,佔該分支總耗時約26%。round-robin是
-                        //     靜態分配(index % workerCount,myTasks在迴圈開始前就已經定案,不像
-                        //     random-dynamic/lpt/spt要邊跑邊向共用佇列要下一個task),所以可以安全地把
-                        //     myTasks全部串成同一段shellScript,整個worker只呼叫一次sh,不影響任何
-                        //     分配結果。log行格式(含worker${currentWorkerId}/cpu${thisCpu}欄位,理由
-                        //     見下方,與lpt/spt/random-dynamic對齊)不變,只是改成逐task append進同一個
-                        //     字串,最後一次寫入。
-                        def shellScript = """cd /workspace
+                        // <<< 改(四支演算法統一分派粒度):myTasks依序每CHUNK_SIZE個task組成一段
+                        //     shellScript、呼叫一次sh。CHUNK_SIZE由config傳入,預設2,與random-dynamic/
+                        //     lpt/spt相同。原本round-robin把整個worker的task串成一次sh(0開銷),但
+                        //     build309 vs build316的拆解顯示:兩者關鍵路徑(排程品質)只差1~2%,總耗時差距
+                        //     幾乎全部來自sh呼叫次數不同,等於拿「呼叫次數」而不是「排程策略」在比較。
+                        //     四支統一用相同CHUNK_SIZE後,開銷結構一致,比較只反映任務分配策略。
+                        //     N=2的依據:build318/319的LPT/SPT pilot(chunk 1/2/3/5各跑2次),只有chunk=2
+                        //     在兩支演算法的關鍵路徑差距都落在重複測試的變異範圍內。
+                        //     round-robin是靜態分配,切成chunk不會改變哪個task分給哪個worker、也不改變順序。
+                        def CHUNK_SIZE = config.chunkSize ?: 2
+                        for (int s = 0; s < myTasks.size(); s += CHUNK_SIZE) {
+                          def end = Math.min(s + CHUNK_SIZE, myTasks.size())
+                          def chunk = myTasks[s..<end]
+                          def shellScript = """cd /workspace
 export ANT_OPTS='${jvmOpts}'
 """
-                        myTasks.each { task ->
+                          chunk.each { task ->
                             // <<< 改:log 行末新增 worker${currentWorkerId} 欄位(與lpt/spt/random-dynamic
                             //     同步處理)。round-robin本身是靜態分配(index % workerCount),理論上不需要
                             //     靠這欄位排錯,但加上後可肉眼核對「任務序號是否確實依照 i % N 規律輪流分配」
@@ -118,18 +122,13 @@ end=\$(date +%s%3N)
 duration=\$(awk "BEGIN {printf \\"%.3f\\", (\$end - \$start) / 1000}")
 echo "${task.bug}:${task.id},\${duration},${algorithmName},worker${currentWorkerId},cpu${thisCpu}" >> ${localLog}
 """
-                        }
-                        // <<< 改:單一task逾時改用bash自己的`timeout -k 10 3600`(3600秒=60分鐘,10秒後
-                        //     還沒死就補SIGKILL),不再依賴外層Jenkins的timeout(time:60,unit:'MINUTES')
-                        //     包住每個task呼叫——原本那個包法是包住每一次sh呼叫,現在整個worker只剩一次
-                        //     sh呼叫,若不改用bash層級的timeout,單一task卡住會讓整段shellScript(含後面
-                        //     所有還沒跑的task)一起被判定逾時、整批陣亡,而不是只犧牲那一個task。
-                        //     外層這裡的timeout(time: myTasks.size()*60, unit:'MINUTES')只是抓「每個task
-                        //     最多60分鐘」疊加起來的最壞情況總和當保險上限,沒有放寬任何一個task實際可以
-                        //     卡多久的保證(真正的60分鐘上限由上面bash的timeout保證),純粹是避免bash腳本
-                        //     本身在個別ant呼叫之外的地方卡死時,還有一層Jenkins端的兜底。
-                        timeout(time: myTasks.size() * 60, unit: 'MINUTES') {
-                            sh shellScript
+                          }
+                          // <<< 改:單一task逾時由bash的`timeout -k 10 3600`保證(60分鐘,逾時10秒後補
+                          //     SIGKILL),一個chunk內某個task卡住只犧牲該task,不拖垮同chunk的其他task。
+                          //     外層timeout(time: chunk.size()*60)只是「每個task最多60分鐘」疊加的保險上限。
+                          timeout(time: chunk.size() * 60, unit: 'MINUTES') {
+                              sh shellScript
+                          }
                         }
 
                         sh "cp ${localLog} worker_log_${groupTag}_${currentWorkerId}_${BUILD_ID}.txt"   // <<< 改:檔名加${groupTag}_

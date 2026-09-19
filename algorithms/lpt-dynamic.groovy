@@ -133,11 +133,11 @@ spec:
                         sh "touch ${localLog}"
 
                         // <<< 改(sh呼叫合併,與random-dynamic相同寫法):一次poll CHUNK_SIZE個task組成chunk,
-                        //     chunk內串成一段shellScript只呼叫一次sh。CHUNK_SIZE由config傳入,預設5;
+                        //     chunk內串成一段shellScript只呼叫一次sh。CHUNK_SIZE由config傳入,預設2;
                         //     傳1即等同原本逐task呼叫sh的行為(pilot用來比較chunking是否扭曲LPT排程)。
                         //     單一task逾時改由bash的`timeout -k 10 3600`保證,外層Jenkins timeout只當
                         //     chunk.size()*60分鐘的保險上限。每個task仍各自寫一行log(含pred=)。
-                        def CHUNK_SIZE = config.chunkSize ?: 5
+                        def CHUNK_SIZE = config.chunkSize ?: 2   // 預設2,四支演算法統一(依據見random-dynamic.groovy同段註解)
                         while (true) {
                             def chunk = []
                             for (int c = 0; c < CHUNK_SIZE; c++) {

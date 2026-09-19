@@ -52,14 +52,7 @@ pipeline {
             steps {
                 script {
                     def cpuVariableList = params.CPU_VARIABLE_CORES.split(',').collect { it.trim() }
-                    def parallelAlgos = ['random-dynamic']   // <<< 今晚臨時修改(暫定,第二次調整):round-robin的正式
-                                                            //     驗證已完成(build309),資料要保留當lpt/spt的
-                                                            //     基準,現在換成只跑random-dynamic做它的驗證,
-                                                            //     避免round-robin被重跑產生新log稀釋/污染build309
-                                                            //     那份乾淨資料。觸發時CLEAN_REPORTS務必設false,
-                                                            //     不然「清理」階段仍會連round-robin資料夾一起清空。
-                                                            //     random-dynamic驗證過關、且正式版也跑完後,記得
-                                                            //     改回 ['round-robin', 'random-dynamic']。
+                    def parallelAlgos = ['round-robin', 'random-dynamic']   // 還原:四支演算法統一CHUNK_SIZE=2後,基準兩支一起重跑
                     def wcs = params.PARALLEL_WORKERS.split(',').collect { it.trim().toInteger() }   // 不動:參數名稱沿用,僅內部執行方式改為序列
 
                     // <<< 改:原本用 wcs.max() 在Jenkins script-security沙箱裡會被擋
@@ -146,18 +139,12 @@ pipeline {
                     def serialAlgos = ['lpt-dynamic', 'spt-dynamic']   // 順序固定:lpt 先 spt 後
                     def wcs = params.SERIAL_WORKERS.split(',').collect { it.trim().toInteger() }
 
-                    // <<< 臨時修改(pilot專用,驗證chunking是否扭曲LPT/SPT排程):每個(worker數,演算法)
-                    //     依序跑 PILOT_CHUNKS 裡的每個chunk size。chunk=1等同原本逐task呼叫sh,當作對照組。
-                    //     比較指標是「關鍵路徑task加總」(不含sh開銷,只反映排程品質)。groupTag與runtime檔名
-                    //     都帶chunk size,避免互相覆蓋。pilot結束、N定案後,改回原本只跑一次、不傳chunkSize。
-                    def PILOT_CHUNKS = [1, 2, 3, 5]
                     wcs.each { wc ->
                         serialAlgos.each { algoName ->
-                          PILOT_CHUNKS.each { cs ->
-                            echo "🚀 [序列] ${algoName} (${wc}w, CHUNK_SIZE=${cs})"
+                            echo "🚀 [序列] ${algoName} (${wc}w)"
                             def cpuCores = (params.CPU_MODE == 'fixed') ? params.CPU_FIXED_CORES.trim() : null
                             def cpuPerWorker = (params.CPU_MODE == 'variable') ? cpuVariableList.take(wc) : null
-                            def groupTag = "${algoName}-chunk${cs}-${wc}w"   // <<< 改:帶入chunk size
+                            def groupTag = "${algoName}-${wc}w"   // <<< 新增:抽出groupTag變數,等待邏輯需要用同一個值
                             def algorithm = load "${env.FRAMEWORK_PATH}/algorithms/${algoName}.groovy"
                             long st = System.currentTimeMillis()
                             algorithm.execute(
@@ -165,13 +152,12 @@ pipeline {
                                 workerCount: wc,
                                 groupTag: groupTag,
                                 cpuCores: cpuCores,
-                                cpuPerWorker: cpuPerWorker,
-                                chunkSize: cs   // <<< 新增:傳給lpt/spt的config.chunkSize
+                                cpuPerWorker: cpuPerWorker
                             )
                             long et = System.currentTimeMillis()
                             def dur = (et - st) / 1000.0
-                            echo "⏱️ [序列] ${algoName} (${wc}w, CHUNK_SIZE=${cs}) 完成,耗時 ${dur}s"
-                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_chunk${cs}_${wc}w.txt"
+                            echo "⏱️ [序列] ${algoName} (${wc}w) 完成,耗時 ${dur}s"
+                            sh "echo '${dur}' > ${env.FRAMEWORK_PATH}/experiments/${algoName}/runtime_${wc}w.txt"
 
                             // <<< 新增:等待邏輯,原因與放置位置同階段一(見上方註解),避免下一條分支
                             //     (lpt→spt,或下一個worker數)因上一條的pod還沒終止完畢而Pending。
@@ -187,7 +173,6 @@ pipeline {
                                     sleep 2
                                 done
                             """
-                          }
                         }
                     }
                 }
